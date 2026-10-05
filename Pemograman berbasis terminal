@@ -1,0 +1,802 @@
+// DUITKU - versi SATU FILE (gabungan transaksi.h + transaksi.cpp + main.cpp)
+// Build: g++ duitku_satu_file.cpp -o duitku
+// ============================================================
+//  DUITKU - Sistem Informasi Pengelolaan Keuangan Bulanan
+//  File   : transaksi.h
+//  Isi    : ADT Transaksi + Singly Linked List (SLL)
+// ============================================================
+#ifndef TRANSAKSI_H
+#define TRANSAKSI_H
+
+#include <string>
+using namespace std;
+
+const int JML_KATEGORI = 6;
+extern const string KATEGORI[JML_KATEGORI];
+
+// ---------- Tipe data ----------
+struct Transaksi {
+    int id;              // ID unik otomatis
+    string tanggal;      // format YYYY-MM-DD
+    string keterangan;   // deskripsi singkat
+    string kategori;     // Makan, Transport, Kuliah, Hiburan, Kos, Lainnya
+    long long nominal;   // dalam rupiah
+    string tipe;         // "Pemasukan" / "Pengeluaran"
+};
+typedef Transaksi infotype;
+
+typedef struct Node *address;   // address = pointer ke Node
+struct Node {
+    infotype info;
+    address next;               // pointer ke node berikutnya
+};
+
+struct List {
+    address first;              // head
+    int nextId;                 // penghitung ID otomatis
+};
+
+struct Pengaturan {
+    long long anggaran;         // anggaran bulanan
+    long long batasHarian;      // 0 = tidak aktif
+    long long batasBulanan;
+    long long batasTahunan;
+};
+
+// ---------- Primitif SLL ----------
+void createList(List &L);
+bool isEmpty(List L);
+address alokasi(infotype x);
+void dealokasi(address &P);                 // mengembalikan memori node
+
+void insertFirst(List &L, address P);
+void insertLast(List &L, address P);
+void insertAfter(address Prec, address P);
+
+void deleteFirst(List &L, address &P);
+void deleteLast(List &L, address &P);
+void deleteAfter(address Prec, address &P);
+
+void clearList(List &L);                    // dealokasi seluruh node
+int countNodes(List L);
+
+// ---------- Pencarian & agregasi ----------
+address findByID(List L, int id);                       // Linear Search
+int searchKeyword(List L, const string &kw);            // Linear Search (cetak hasil)
+address findMaxPengeluaran(List L, const string &prefix = ""); // FindMax
+long long totalPengeluaran(List L, const string &prefix = "");
+long long totalPemasukan(List L, const string &prefix = "");
+
+// ---------- Tampilan ----------
+string formatRupiah(long long n);
+void printHeader();
+void printRow(const infotype &t);
+void printAll(List L);
+void printRange(List L, const string &awal, const string &akhir);
+void printRingkasanKategori(List L, const string &prefix);
+
+// ---------- Utilitas ----------
+string toStr(long long n);                  // angka -> string
+bool parseLL(const string &s, long long &out); // string -> angka (false jika tidak valid)
+bool isValidDate(const string &s);          // YYYY-MM-DD
+string todayString();
+
+// ---------- File ----------
+bool saveList(List L, Pengaturan S, const string &file);
+bool loadList(List &L, Pengaturan &S, const string &file);
+
+#endif
+
+// ======== transaksi.cpp ========
+#include <iostream>
+#include <iomanip>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <vector>
+#include <ctime>
+#include <cctype>
+#include <cstdlib>
+#include <cstddef>
+using namespace std;
+
+const string KATEGORI[JML_KATEGORI] = {"Makan", "Transport", "Kuliah", "Hiburan", "Kos", "Lainnya"};
+
+// ===================== PRIMITIF SLL =====================
+void createList(List &L) {
+    L.first = NULL;
+    L.nextId = 1;
+}
+
+bool isEmpty(List L) { return L.first == NULL; }
+
+address alokasi(infotype x) {
+    address P = new Node;
+    P->info = x;
+    P->next = NULL;
+    return P;
+}
+
+void dealokasi(address &P) {
+    delete P;
+    P = NULL;
+}
+
+void insertFirst(List &L, address P) {
+    P->next = L.first;
+    L.first = P;
+}
+
+void insertLast(List &L, address P) {
+    if (isEmpty(L)) {
+        L.first = P;
+    } else {
+        address Q = L.first;
+        while (Q->next != NULL) Q = Q->next;
+        Q->next = P;
+    }
+}
+
+void insertAfter(address Prec, address P) {
+    P->next = Prec->next;
+    Prec->next = P;
+}
+
+void deleteFirst(List &L, address &P) {
+    P = L.first;
+    if (P != NULL) {
+        L.first = P->next;
+        P->next = NULL;
+    }
+}
+
+void deleteLast(List &L, address &P) {
+    if (isEmpty(L)) {
+        P = NULL;
+    } else if (L.first->next == NULL) {
+        P = L.first;
+        L.first = NULL;
+    } else {
+        address Q = L.first;
+        while (Q->next->next != NULL) Q = Q->next;
+        P = Q->next;
+        Q->next = NULL;
+    }
+}
+
+void deleteAfter(address Prec, address &P) {
+    P = Prec->next;
+    if (P != NULL) {
+        Prec->next = P->next;
+        P->next = NULL;
+    }
+}
+
+void clearList(List &L) {
+    address P;
+    while (!isEmpty(L)) {
+        deleteFirst(L, P);
+        dealokasi(P);
+    }
+}
+
+int countNodes(List L) {
+    int n = 0;
+    for (address P = L.first; P != NULL; P = P->next) n++;
+    return n;
+}
+
+// ===================== PENCARIAN & AGREGASI =====================
+static bool cocokPrefix(const string &tanggal, const string &prefix) {
+    return tanggal.compare(0, prefix.size(), prefix) == 0;
+}
+
+static string toLower(string s) {
+    for (size_t i = 0; i < s.size(); i++) s[i] = (char)tolower((unsigned char)s[i]);
+    return s;
+}
+
+// Linear Search berdasarkan ID
+address findByID(List L, int id) {
+    address P = L.first;
+    while (P != NULL) {
+        if (P->info.id == id) return P;
+        P = P->next;
+    }
+    return NULL;
+}
+
+// Linear Search berdasarkan kata kunci (keterangan / kategori)
+int searchKeyword(List L, const string &kw) {
+    string key = toLower(kw);
+    int found = 0;
+    for (address P = L.first; P != NULL; P = P->next) {
+        if (toLower(P->info.keterangan).find(key) != string::npos ||
+            toLower(P->info.kategori).find(key) != string::npos) {
+            if (found == 0) printHeader();
+            printRow(P->info);
+            found++;
+        }
+    }
+    return found;
+}
+
+// FindMax: pengeluaran dengan nominal terbesar
+address findMaxPengeluaran(List L, const string &prefix) {
+    address maxP = NULL;
+    for (address P = L.first; P != NULL; P = P->next) {
+        if (P->info.tipe == "Pengeluaran" && cocokPrefix(P->info.tanggal, prefix)) {
+            if (maxP == NULL || P->info.nominal > maxP->info.nominal) maxP = P;
+        }
+    }
+    return maxP;
+}
+
+long long totalPengeluaran(List L, const string &prefix) {
+    long long total = 0;
+    for (address P = L.first; P != NULL; P = P->next)
+        if (P->info.tipe == "Pengeluaran" && cocokPrefix(P->info.tanggal, prefix))
+            total += P->info.nominal;
+    return total;
+}
+
+long long totalPemasukan(List L, const string &prefix) {
+    long long total = 0;
+    for (address P = L.first; P != NULL; P = P->next)
+        if (P->info.tipe == "Pemasukan" && cocokPrefix(P->info.tanggal, prefix))
+            total += P->info.nominal;
+    return total;
+}
+
+// ===================== TAMPILAN =====================
+string formatRupiah(long long n) {
+    string s = toStr(n < 0 ? -n : n);
+    string r;
+    int c = 0;
+    for (int i = (int)s.size() - 1; i >= 0; i--) {
+        r.insert(r.begin(), s[i]);
+        if (++c % 3 == 0 && i > 0) r.insert(r.begin(), '.');
+    }
+    return (n < 0 ? "-Rp " : "Rp ") + r;
+}
+
+void printHeader() {
+    cout << left << setw(5) << "ID" << setw(12) << "Tanggal" << setw(24) << "Keterangan"
+         << setw(11) << "Kategori" << setw(12) << "Tipe" << right << setw(16) << "Nominal" << left << "\n";
+    cout << string(80, '-') << "\n";
+}
+
+void printRow(const infotype &t) {
+    string k = t.keterangan;
+    if (k.size() > 22) k = k.substr(0, 21) + ".";
+    cout << left << setw(5) << t.id << setw(12) << t.tanggal << setw(24) << k
+         << setw(11) << t.kategori << setw(12) << t.tipe
+         << right << setw(16) << formatRupiah(t.nominal) << left << "\n";
+}
+
+void printAll(List L) {
+    if (isEmpty(L)) {
+        cout << "Belum ada transaksi.\n";
+        return;
+    }
+    printHeader();
+    for (address P = L.first; P != NULL; P = P->next) printRow(P->info);
+    cout << string(80, '-') << "\n";
+    cout << "Total transaksi: " << countNodes(L) << "\n";
+}
+
+void printRange(List L, const string &awal, const string &akhir) {
+    int n = 0;
+    long long in = 0, out = 0;
+    for (address P = L.first; P != NULL; P = P->next) {
+        if (P->info.tanggal >= awal && P->info.tanggal <= akhir) {
+            if (n == 0) printHeader();
+            printRow(P->info);
+            n++;
+            if (P->info.tipe == "Pemasukan") in += P->info.nominal;
+            else out += P->info.nominal;
+        }
+    }
+    if (n == 0) {
+        cout << "Tidak ada transaksi pada rentang tersebut.\n";
+        return;
+    }
+    cout << string(80, '-') << "\n";
+    cout << "Jumlah transaksi : " << n << "\n";
+    cout << "Total pemasukan  : " << formatRupiah(in) << "\n";
+    cout << "Total pengeluaran: " << formatRupiah(out) << "\n";
+}
+
+void printRingkasanKategori(List L, const string &prefix) {
+    long long total = totalPengeluaran(L, prefix);
+    cout << "\nPengeluaran per kategori:\n";
+    if (total == 0) {
+        cout << "  (belum ada pengeluaran)\n";
+        return;
+    }
+    for (int i = 0; i < JML_KATEGORI; i++) {
+        long long sum = 0;
+        for (address P = L.first; P != NULL; P = P->next)
+            if (P->info.tipe == "Pengeluaran" && P->info.kategori == KATEGORI[i] &&
+                cocokPrefix(P->info.tanggal, prefix))
+                sum += P->info.nominal;
+        int pct = (int)(sum * 100 / total);
+        cout << "  " << left << setw(10) << KATEGORI[i] << right << setw(16) << formatRupiah(sum)
+             << " " << setw(3) << pct << "% " << string(pct / 5, '#') << left << "\n";
+    }
+}
+
+// ===================== UTILITAS =====================
+string toStr(long long n) {
+    ostringstream o;
+    o << n;
+    return o.str();
+}
+
+bool parseLL(const string &s, long long &out) {
+    if (s.empty() || s.size() > 18) return false;
+    size_t i = 0;
+    bool neg = false;
+    if (s[0] == '-') {
+        neg = true;
+        i = 1;
+        if (s.size() == 1) return false;
+    }
+    long long v = 0;
+    for (; i < s.size(); i++) {
+        if (!isdigit((unsigned char)s[i])) return false;
+        v = v * 10 + (s[i] - '0');
+    }
+    out = neg ? -v : v;
+    return true;
+}
+
+bool isValidDate(const string &s) {
+    if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
+    for (int i = 0; i < 10; i++) {
+        if (i == 4 || i == 7) continue;
+        if (!isdigit((unsigned char)s[i])) return false;
+    }
+    int y = atoi(s.substr(0, 4).c_str()), m = atoi(s.substr(5, 2).c_str()), d = atoi(s.substr(8, 2).c_str());
+    if (y < 1900 || y > 2100 || m < 1 || m > 12 || d < 1) return false;
+    int hari[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    bool kabisat = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    int maks = hari[m - 1] + ((m == 2 && kabisat) ? 1 : 0);
+    return d <= maks;
+}
+
+string todayString() {
+    time_t t = time(NULL);
+    tm *lt = localtime(&t);
+    char buf[11];
+    strftime(buf, sizeof(buf), "%Y-%m-%d", lt);
+    return string(buf);
+}
+
+// ===================== FILE =====================
+bool saveList(List L, Pengaturan S, const string &file) {
+    ofstream f(file.c_str());
+    if (!f) return false;
+    f << S.anggaran << " " << S.batasHarian << " " << S.batasBulanan << " "
+      << S.batasTahunan << " " << L.nextId << "\n";
+    for (address P = L.first; P != NULL; P = P->next) {
+        const infotype &t = P->info;
+        f << t.id << "|" << t.tanggal << "|" << t.keterangan << "|" << t.kategori << "|"
+          << t.nominal << "|" << t.tipe << "\n";
+    }
+    return true;
+}
+
+bool loadList(List &L, Pengaturan &S, const string &file) {
+    ifstream f(file.c_str());
+    if (!f) return false;
+    string line;
+    if (!getline(f, line)) return false;
+    {
+        stringstream ss(line);
+        ss >> S.anggaran >> S.batasHarian >> S.batasBulanan >> S.batasTahunan >> L.nextId;
+    }
+    address tail = NULL;
+    while (getline(f, line)) {
+        if (line.empty()) continue;
+        vector<string> parts;
+        stringstream ss(line);
+        string item;
+        while (getline(ss, item, '|')) parts.push_back(item);
+        if (parts.size() != 6) continue;
+        infotype t;
+        long long idv, nom;
+        if (!parseLL(parts[0], idv) || !parseLL(parts[4], nom)) continue;
+        t.id = (int)idv;
+        t.tanggal = parts[1];
+        t.keterangan = parts[2];
+        t.kategori = parts[3];
+        t.nominal = nom;
+        t.tipe = parts[5];
+        address P = alokasi(t);
+        if (tail == NULL) L.first = P;
+        else tail->next = P;
+        tail = P;
+    }
+    return true;
+}
+
+// ======== main.cpp ========
+// ============================================================
+//  DUITKU - Sistem Informasi Pengelolaan Keuangan Bulanan (CLI)
+//  File : main.cpp
+//  Build: g++ -std=c++11 -Wall main.cpp transaksi.cpp -o duitku
+// ============================================================
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
+#include <cctype>
+#include <algorithm>
+using namespace std;
+
+// ===================== HELPER INPUT =====================
+static string trim(const string &s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+string bacaString(const string &prompt) {
+    string s;
+    cout << prompt;
+    if (!getline(cin, s)) exit(0);
+    return trim(s);
+}
+
+long long bacaAngka(const string &prompt, long long minv = 0) {
+    while (true) {
+        string s = bacaString(prompt);
+        long long v;
+        if (parseLL(s, v) && v >= minv) return v;
+        cout << "  Input tidak valid. Masukkan angka >= " << minv << ".\n";
+    }
+}
+
+string bacaTanggal(const string &prompt, bool kosongHariIni) {
+    while (true) {
+        string s = bacaString(prompt);
+        if (s.empty() && kosongHariIni) return todayString();
+        if (isValidDate(s)) return s;
+        cout << "  Format tanggal salah. Gunakan YYYY-MM-DD (contoh 2026-05-20).\n";
+    }
+}
+
+string pilihKategori() {
+    cout << "Kategori:\n";
+    for (int i = 0; i < JML_KATEGORI; i++) cout << "  " << i + 1 << ". " << KATEGORI[i] << "\n";
+    long long p;
+    do { p = bacaAngka("Pilih kategori (1-6): "); } while (p < 1 || p > JML_KATEGORI);
+    return KATEGORI[p - 1];
+}
+
+string pilihTipe() {
+    cout << "Tipe: 1. Pengeluaran  2. Pemasukan\n";
+    long long p;
+    do { p = bacaAngka("Pilih tipe (1-2): "); } while (p < 1 || p > 2);
+    return p == 1 ? "Pengeluaran" : "Pemasukan";
+}
+
+void tekanEnter() { bacaString("\nTekan Enter untuk lanjut..."); }
+
+// ===================== AUTENTIKASI =====================
+static string hashPass(const string &p) {
+    unsigned long h = 5381;
+    for (size_t i = 0; i < p.size(); i++) h = h * 33 + (unsigned char)p[i];
+    ostringstream o;
+    o << h;
+    return o.str();
+}
+
+static bool namaValid(const string &u) {
+    if (u.empty() || u.size() > 20) return false;
+    for (size_t i = 0; i < u.size(); i++)
+        if (!isalnum((unsigned char)u[i]) && u[i] != '_') return false;
+    return true;
+}
+
+static bool cariUser(const string &u, string &hashOut) {
+    ifstream f("users.txt");
+    string nama, h;
+    while (f >> nama >> h) {
+        if (nama == u) { hashOut = h; return true; }
+    }
+    return false;
+}
+
+void registrasi() {
+    cout << "\n=== REGISTRASI AKUN ===\n";
+    string u = bacaString("Username (huruf/angka/_): ");
+    if (!namaValid(u)) { cout << "Username tidak valid.\n"; return; }
+    string tmp;
+    if (cariUser(u, tmp)) { cout << "Username sudah dipakai.\n"; return; }
+    string p = bacaString("Password (min 4 karakter): ");
+    if (p.size() < 4) { cout << "Password terlalu pendek.\n"; return; }
+    ofstream f("users.txt", ios::app);
+    f << u << " " << hashPass(p) << "\n";
+    cout << "Registrasi berhasil! Silakan login.\n";
+}
+
+bool login(string &userOut) {
+    cout << "\n=== LOGIN ===\n";
+    string u = bacaString("Username: ");
+    string p = bacaString("Password: ");
+    string h;
+    if (cariUser(u, h) && h == hashPass(p)) {
+        userOut = u;
+        cout << "Login berhasil. Halo, " << u << "!\n";
+        return true;
+    }
+    cout << "Username atau password salah.\n";
+    return false;
+}
+
+// ===================== PERINGATAN PENGELUARAN =====================
+static void cekSatu(const string &nama, long long total, long long batas) {
+    if (batas <= 0) return;
+    if (total > batas)
+        cout << "  [PERINGATAN] Pengeluaran " << nama << " melebihi batas! ("
+             << formatRupiah(total) << " / " << formatRupiah(batas) << ")\n";
+    else if (total * 100 >= batas * 80)
+        cout << "  [HATI-HATI] Pengeluaran " << nama << " sudah " << (total * 100 / batas)
+             << "% dari batas (" << formatRupiah(total) << " / " << formatRupiah(batas) << ")\n";
+}
+
+void cekPeringatan(List L, Pengaturan S, const string &tanggal) {
+    cekSatu("harian", totalPengeluaran(L, tanggal), S.batasHarian);
+    cekSatu("bulanan", totalPengeluaran(L, tanggal.substr(0, 7)), S.batasBulanan);
+    cekSatu("tahunan", totalPengeluaran(L, tanggal.substr(0, 4)), S.batasTahunan);
+}
+
+// ===================== MENU FITUR =====================
+infotype inputTransaksi(List &L) {
+    infotype t;
+    t.id = L.nextId;
+    t.tanggal = bacaTanggal("Tanggal (YYYY-MM-DD, kosong = hari ini): ", true);
+    do { t.keterangan = bacaString("Keterangan: "); } while (t.keterangan.empty());
+    for (size_t i = 0; i < t.keterangan.size(); i++)
+        if (t.keterangan[i] == '|') t.keterangan[i] = '-';
+    t.kategori = pilihKategori();
+    t.nominal = bacaAngka("Nominal (Rp): ", 1);
+    t.tipe = pilihTipe();
+    return t;
+}
+
+void menuTambah(List &L, Pengaturan &S) {
+    cout << "\n=== TAMBAH TRANSAKSI ===\n";
+    cout << "1. Tambah di awal\n2. Tambah di akhir\n3. Tambah setelah ID tertentu\n";
+    long long pos;
+    do { pos = bacaAngka("Pilih posisi (1-3): "); } while (pos < 1 || pos > 3);
+
+    address prec = NULL;
+    if (pos == 3) {
+        int idPrec = (int)bacaAngka("Sisipkan setelah ID: ");
+        prec = findByID(L, idPrec);
+        if (prec == NULL) { cout << "ID " << idPrec << " tidak ditemukan.\n"; return; }
+    }
+
+    infotype t = inputTransaksi(L);
+    L.nextId++;
+    address P = alokasi(t);
+    if (pos == 1) insertFirst(L, P);
+    else if (pos == 2) insertLast(L, P);
+    else insertAfter(prec, P);
+
+    cout << "Transaksi berhasil ditambahkan dengan ID " << t.id << ".\n";
+    if (t.tipe == "Pengeluaran") cekPeringatan(L, S, t.tanggal);
+}
+
+void menuUbah(List &L, Pengaturan &S) {
+    cout << "\n=== UBAH TRANSAKSI ===\n";
+    if (isEmpty(L)) { cout << "Belum ada transaksi.\n"; return; }
+    int id = (int)bacaAngka("ID transaksi yang diubah: ");
+    address P = findByID(L, id);
+    if (P == NULL) { cout << "ID tidak ditemukan.\n"; return; }
+
+    printHeader();
+    printRow(P->info);
+    cout << "\n(kosongkan input untuk mempertahankan nilai lama)\n";
+
+    string s = bacaString("Tanggal baru (YYYY-MM-DD): ");
+    if (!s.empty()) {
+        if (isValidDate(s)) P->info.tanggal = s;
+        else cout << "  Format tanggal salah, tanggal tidak diubah.\n";
+    }
+    s = bacaString("Keterangan baru: ");
+    if (!s.empty()) {
+        for (size_t i = 0; i < s.size(); i++) if (s[i] == '|') s[i] = '-';
+        P->info.keterangan = s;
+    }
+    cout << "Ubah kategori? (y/n): ";
+    if (bacaString("") == "y") P->info.kategori = pilihKategori();
+    s = bacaString("Nominal baru: ");
+    if (!s.empty()) {
+        long long v;
+        if (parseLL(s, v) && v > 0) P->info.nominal = v;
+        else cout << "  Nominal tidak valid, tidak diubah.\n";
+    }
+    cout << "Ubah tipe? (y/n): ";
+    if (bacaString("") == "y") P->info.tipe = pilihTipe();
+
+    cout << "Transaksi berhasil diperbarui.\n";
+    if (P->info.tipe == "Pengeluaran") cekPeringatan(L, S, P->info.tanggal);
+}
+
+void menuHapus(List &L) {
+    cout << "\n=== HAPUS TRANSAKSI ===\n";
+    if (isEmpty(L)) { cout << "Belum ada transaksi.\n"; return; }
+    cout << "1. Delete First\n2. Delete Last\n3. Delete After (hapus transaksi setelah ID tertentu)\n";
+    long long pos;
+    do { pos = bacaAngka("Pilih (1-3): "); } while (pos < 1 || pos > 3);
+
+    address P = NULL;
+    if (pos == 1) {
+        deleteFirst(L, P);
+    } else if (pos == 2) {
+        deleteLast(L, P);
+    } else {
+        int idPrec = (int)bacaAngka("Hapus transaksi SETELAH ID: ");
+        address prec = findByID(L, idPrec);
+        if (prec == NULL) { cout << "ID " << idPrec << " tidak ditemukan.\n"; return; }
+        deleteAfter(prec, P);
+        if (P == NULL) { cout << "Tidak ada transaksi setelah ID " << idPrec << ".\n"; return; }
+    }
+    cout << "Transaksi berikut dihapus:\n";
+    printHeader();
+    printRow(P->info);
+    dealokasi(P);   // kembalikan memori node
+}
+
+void menuCari(List &L) {
+    cout << "\n=== CARI TRANSAKSI ===\n";
+    if (isEmpty(L)) { cout << "Belum ada transaksi.\n"; return; }
+    cout << "1. Berdasarkan ID\n2. Berdasarkan kata kunci (keterangan/kategori)\n";
+    long long p;
+    do { p = bacaAngka("Pilih (1-2): "); } while (p < 1 || p > 2);
+    if (p == 1) {
+        int id = (int)bacaAngka("ID: ");
+        address P = findByID(L, id);
+        if (P == NULL) cout << "Transaksi tidak ditemukan.\n";
+        else { printHeader(); printRow(P->info); }
+    } else {
+        string kw = bacaString("Kata kunci: ");
+        int n = searchKeyword(L, kw);
+        if (n == 0) cout << "Tidak ada transaksi yang cocok.\n";
+        else cout << string(80, '-') << "\nDitemukan " << n << " transaksi.\n";
+    }
+}
+
+void menuTerbesar(List &L) {
+    cout << "\n=== PENGELUARAN TERBESAR ===\n";
+    string prefix = bacaString("Periode (YYYY-MM / YYYY, kosong = semua): ");
+    address M = findMaxPengeluaran(L, prefix);
+    if (M == NULL) { cout << "Tidak ada pengeluaran pada periode tersebut.\n"; return; }
+    printHeader();
+    printRow(M->info);
+}
+
+void menuRingkasan(List &L, Pengaturan &S) {
+    cout << "\n=== RINGKASAN BULANAN ===\n";
+    string bulan;
+    while (true) {
+        bulan = bacaString("Bulan (YYYY-MM, kosong = bulan ini): ");
+        if (bulan.empty()) { bulan = todayString().substr(0, 7); break; }
+        if (bulan.size() == 7 && isValidDate(bulan + "-01")) break;
+        cout << "  Format salah. Contoh: 2026-05\n";
+    }
+    long long out = totalPengeluaran(L, bulan);
+    long long in = totalPemasukan(L, bulan);
+    cout << "\nPeriode             : " << bulan << "\n";
+    cout << "Anggaran bulanan    : " << formatRupiah(S.anggaran) << "\n";
+    cout << "Total pemasukan     : " << formatRupiah(in) << "\n";
+    cout << "Total pengeluaran   : " << formatRupiah(out) << "\n";
+    cout << "Sisa anggaran       : " << formatRupiah(S.anggaran - out) << "\n";
+    if (S.anggaran > 0 && out > S.anggaran) cout << "  [!] Pengeluaran melebihi anggaran bulanan.\n";
+    printRingkasanKategori(L, bulan);
+
+    address M = findMaxPengeluaran(L, bulan);
+    if (M != NULL) {
+        cout << "\nPengeluaran terbesar bulan ini: " << M->info.keterangan << " ("
+             << formatRupiah(M->info.nominal) << ", " << M->info.tanggal << ")\n";
+    }
+}
+
+void menuFilter(List &L) {
+    cout << "\n=== FILTER RENTANG TANGGAL ===\n";
+    string a = bacaTanggal("Tanggal awal  (YYYY-MM-DD): ", false);
+    string b = bacaTanggal("Tanggal akhir (YYYY-MM-DD): ", false);
+    if (a > b) swap(a, b);
+    printRange(L, a, b);
+}
+
+void menuPengaturan(Pengaturan &S) {
+    cout << "\n=== ATUR ANGGARAN & PERINGATAN ===\n";
+    cout << "Anggaran bulanan saat ini : " << formatRupiah(S.anggaran) << "\n";
+    cout << "Batas harian              : " << (S.batasHarian ? formatRupiah(S.batasHarian) : "nonaktif") << "\n";
+    cout << "Batas bulanan             : " << (S.batasBulanan ? formatRupiah(S.batasBulanan) : "nonaktif") << "\n";
+    cout << "Batas tahunan             : " << (S.batasTahunan ? formatRupiah(S.batasTahunan) : "nonaktif") << "\n\n";
+    cout << "1. Ubah anggaran bulanan\n2. Atur batas harian\n3. Atur batas bulanan\n"
+            "4. Atur batas tahunan\n0. Kembali\n";
+    long long p;
+    do { p = bacaAngka("Pilih (0-4): "); } while (p > 4);
+    switch (p) {
+        case 1: S.anggaran = bacaAngka("Anggaran bulanan baru (Rp): "); break;
+        case 2: S.batasHarian = bacaAngka("Batas harian (Rp, 0 = nonaktif): "); break;
+        case 3: S.batasBulanan = bacaAngka("Batas bulanan (Rp, 0 = nonaktif): "); break;
+        case 4: S.batasTahunan = bacaAngka("Batas tahunan (Rp, 0 = nonaktif): "); break;
+        default: return;
+    }
+    cout << "Pengaturan disimpan.\n";
+}
+
+// ===================== SESI PENGGUNA =====================
+void sesiPengguna(const string &user) {
+    List L;
+    Pengaturan S = {0, 0, 0, 0};
+    createList(L);
+    string file = "data_" + user + ".txt";
+
+    if (loadList(L, S, file)) {
+        cout << "Data dimuat: " << countNodes(L) << " transaksi.\n";
+    } else {
+        cout << "\nAkun baru terdeteksi. Silakan masukkan anggaran bulanan.\n";
+        S.anggaran = bacaAngka("Anggaran bulanan (Rp): ");
+    }
+
+    while (true) {
+        cout << "\n==============================\n";
+        cout << "   DUITKU - Menu Utama (" << user << ")\n";
+        cout << "==============================\n";
+        cout << " 1. Tambah transaksi\n 2. Tampilkan semua transaksi\n 3. Ubah transaksi\n"
+                " 4. Hapus transaksi\n 5. Cari transaksi\n 6. Pengeluaran terbesar\n"
+                " 7. Ringkasan bulanan & sisa anggaran\n 8. Filter rentang tanggal\n"
+                " 9. Atur anggaran & peringatan\n 0. Simpan & logout\n";
+        long long m = bacaAngka("Pilih menu: ");
+        switch (m) {
+            case 1: menuTambah(L, S); break;
+            case 2: cout << "\n=== DAFTAR TRANSAKSI ===\n"; printAll(L); break;
+            case 3: menuUbah(L, S); break;
+            case 4: menuHapus(L); break;
+            case 5: menuCari(L); break;
+            case 6: menuTerbesar(L); break;
+            case 7: menuRingkasan(L, S); break;
+            case 8: menuFilter(L); break;
+            case 9: menuPengaturan(S); break;
+            case 0:
+                if (saveList(L, S, file)) cout << "Data tersimpan ke " << file << ".\n";
+                else cout << "Gagal menyimpan data!\n";
+                clearList(L);   // dealokasi semua node
+                return;
+            default: cout << "Menu tidak tersedia.\n";
+        }
+        if (m != 0) tekanEnter();
+    }
+}
+
+// ===================== MAIN =====================
+int main() {
+    cout << "========================================\n";
+    cout << "   DUITKU - Pengelolaan Keuangan Bulanan\n";
+    cout << "========================================\n";
+    while (true) {
+        cout << "\n1. Login\n2. Registrasi\n0. Keluar\n";
+        long long p = bacaAngka("Pilih: ");
+        if (p == 1) {
+            string user;
+            if (login(user)) sesiPengguna(user);
+        } else if (p == 2) {
+            registrasi();
+        } else if (p == 0) {
+            cout << "Terima kasih telah menggunakan DUITKU!\n";
+            return 0;
+        } else {
+            cout << "Pilihan tidak tersedia.\n";
+        }
+    }
+}
